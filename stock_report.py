@@ -12,9 +12,9 @@ import time
 # CONFIGURATION
 # ========================
 # Get credentials from environment variables
-SENDER_EMAIL = os.environ.get('atifmd894@gmail.com')
-SENDER_PASSWORD = os.environ.get('vagomnuknnobhtap')
-RECIPIENT_EMAIL = os.environ.get('atifuddin64@gmail.com')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
+SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD')
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')
 
 # Define top stocks in each category
 TOP_STOCKS = {
