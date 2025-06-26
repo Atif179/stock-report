@@ -1,0 +1,350 @@
+Complete Guide: Setting Up Daily Stock Reports with GitHub Actions
+Here's a step-by-step guide to set up your stock reporting system using GitHub Actions. I'll show you how to modify your script for GitHub and set up the automation.
+
+Modified Script for GitHub Actions (stock_report.py)
+python
+import yfinance as yf
+import pandas as pd
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+import json
+import os
+import time
+
+# ========================
+# CONFIGURATION
+# ========================
+# Get credentials from environment variables
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
+SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD')
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')
+
+# Define top stocks in each category
+TOP_STOCKS = {
+    "Semiconductor": ['NVDA', 'TSM', 'ASML', 'AMD', 'INTC', 'AVGO', 'QCOM', 'TXN', 'MU', 'ADI'],
+    "AI": ['MSFT', 'GOOG', 'AMZN', 'META', 'ORCL', 'IBM', 'CRM', 'NOW', 'PATH', 'AI'],
+    "Defense": ['LMT', 'RTX', 'BA', 'GD', 'NOC', 'HII', 'LHX', 'KBR', 'LDOS', 'BWXT']
+}
+
+# File path for reference prices
+REFERENCE_FILE = "stock_reference.json"
+
+# ========================
+# FUNCTIONS
+# ========================
+def get_stock_data(ticker):
+    """Fetch current stock data using Yahoo Finance"""
+    stock = yf.Ticker(ticker)
+    try:
+        # Get today's data
+        today = datetime.today().date()
+        data = stock.history(period='1d')
+        
+        if data.empty:
+            # Try getting last available data if today is holiday
+            data = stock.history(period='5d').tail(1)
+        
+        if not data.empty:
+            current_price = data['Close'][-1]
+            previous_close = data['Close'][0] if len(data) > 1 else current_price
+            daily_change = ((current_price - previous_close) / previous_close) * 100
+            
+            return {
+                'symbol': ticker,
+                'price': current_price,
+                'daily_change': daily_change
+            }
+    except Exception as e:
+        print(f"Error fetching {ticker}: {str(e)}")
+    return None
+
+def load_reference_prices():
+    """Load reference prices from file"""
+    if os.path.exists(REFERENCE_FILE):
+        with open(REFERENCE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_reference_prices(prices):
+    """Save reference prices to file"""
+    with open(REFERENCE_FILE, 'w') as f:
+        json.dump(prices, f)
+
+def generate_stock_report():
+    """Generate stock performance report"""
+    reference_prices = load_reference_prices()
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    report = {}
+    new_references = False
+
+    # Process each category
+    for category, tickers in TOP_STOCKS.items():
+        category_data = []
+        
+        for ticker in tickers:
+            stock_data = get_stock_data(ticker)
+            if not stock_data:
+                continue
+                
+            current_price = stock_data['price']
+            ref_key = f"{ticker}_reference"
+            
+            # Set reference price if first run or not exists
+            if ref_key not in reference_prices:
+                reference_prices[ref_key] = current_price
+                new_references = True
+                
+            ref_price = reference_prices[ref_key]
+            ref_change = ((current_price - ref_price) / ref_price) * 100
+            
+            category_data.append({
+                'Symbol': ticker,
+                'Current Price': f"${current_price:.2f}",
+                'Change vs Reference': f"{ref_change:+.2f}%",
+                'Daily Change': f"{stock_data['daily_change']:+.2f}%"
+            })
+        
+        # Create DataFrame for the category
+        report[category] = pd.DataFrame(category_data)
+    
+    # Save updated reference prices if new stocks added
+    if new_references:
+        save_reference_prices(reference_prices)
+    
+    return report
+
+def send_stock_report(report):
+    """Send stock report via email"""
+    today = datetime.now().strftime("%B %d, %Y")
+    msg = MIMEMultipart()
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECIPIENT_EMAIL
+    msg['Subject'] = f"Daily Stock Report - {today}"
+    
+    # Create HTML content
+    html = f"""
+    <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+                th {{ background-color: #f2f2f2; text-align: left; padding: 10px; }}
+                td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
+                tr:hover {{ background-color: #f5f5f5; }}
+                .positive {{ color: green; }}
+                .negative {{ color: red; }}
+            </style>
+        </head>
+        <body>
+            <h2>📈 Daily Stock Performance Report ({today})</h2>
+            <p>Reference prices are locked from initial run date. Daily changes show performance vs this reference.</p>
+    """
+    
+    for category, df in report.items():
+        # Format percentage changes with color coding
+        df['Change vs Reference'] = df['Change vs Reference'].apply(
+            lambda x: f'<span class="{"positive" if "+" in x else "negative"}">{x}</span>')
+        df['Daily Change'] = df['Daily Change'].apply(
+            lambda x: f'<span class="{"positive" if "+" in x else "negative"}">{x}</span>')
+        
+        html += f"""
+        <h3>🔧 {category} Sector (Top 10)</h3>
+        {df.to_html(index=False, border=0, justify='left', escape=False)}
+        <br>
+        """
+    
+    html += """
+            <p style="color: #666; font-size: 0.9em;">
+                Note: Data from Yahoo Finance | Reference prices set on first run
+            </p>
+        </body>
+    </html>
+    """
+    
+    msg.attach(MIMEText(html, 'html'))
+    
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENT_EMAIL, msg.as_string())
+        print("Stock report email sent successfully!")
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+
+# ========================
+# MAIN EXECUTION
+# ========================
+if __name__ == "__main__":
+    print("Generating stock report...")
+    stock_report = generate_stock_report()
+    print("Sending email report...")
+    send_stock_report(stock_report)
+    print("Process completed!")
+Workflow File (.github/workflows/stock_report.yml)
+yaml
+name: Daily Stock Report
+
+on:
+  schedule:
+    # Runs at 9 PM UTC daily (4 PM EST - after US markets close)
+    - cron: '0 21 * * *'
+  # Allows manual triggering
+  workflow_dispatch:
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas
+        
+    - name: Load reference prices
+      id: load-ref
+      uses: actions/cache@v3
+      with:
+        path: stock_reference.json
+        key: ref-${{ runner.os }}-${{ hashFiles('stock_report.py') }}
+        
+    - name: Run stock report
+      env:
+        SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+        SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python stock_report.py
+      
+    - name: Save reference prices
+      if: always()
+      uses: actions/cache@v3
+      with:
+        path: stock_reference.json
+        key: ref-${{ runner.os }}-${{ hashFiles('stock_report.py') }}
+Step-by-Step Setup Guide
+1. Create a GitHub Repository
+Go to github.com and create a new repository
+
+Name it "stock-report" or similar
+
+Choose "Public" (private repos have limited Actions minutes)
+
+2. Add Your Files
+Create two files in your repository:
+
+stock_report.py (the Python script above)
+
+.github/workflows/stock_report.yml (the YAML workflow file)
+
+3. Set Up Secrets
+Go to your repository Settings
+
+Select "Secrets and variables" > "Actions"
+
+Create these secrets:
+
+SENDER_EMAIL: Your Gmail address (atifmd894@gmail.com)
+
+SENDER_PASSWORD: Your app password (vagomnuknnobhtapatif)
+
+RECIPIENT_EMAIL: Your recipient email (atifuddin64@gmail.com)
+
+4. First Run and Reference Prices
+Manually trigger the workflow:
+
+Go to "Actions" tab
+
+Select "Daily Stock Report"
+
+Click "Run workflow"
+
+This will:
+
+Set up reference prices
+
+Send your first email report
+
+Cache the reference prices
+
+5. Verify and Customize
+Check your email for the first report
+
+To modify stock lists, edit the TOP_STOCKS dictionary in stock_report.py
+
+To change schedule, edit the cron expression in the YAML file:
+
+Current: 0 21 * * * (9 PM UTC / 4 PM EST)
+
+Format: minute hour day month day-of-week
+
+Cron syntax help
+
+Key Features of This Setup
+Automatic Daily Execution: Runs after US market close
+
+Reference Price Tracking: Uses GitHub cache to persist data between runs
+
+Secure Credentials: Secrets are encrypted and never exposed
+
+Email Formatting: Professional HTML with color-coded percentages
+
+Manual Trigger: Can run anytime via GitHub UI
+
+Free: Uses GitHub's free Actions minutes (2000 mins/month)
+
+Troubleshooting Tips
+First Run Issues:
+
+Check the Actions log for errors
+
+Verify secrets are correctly set
+
+Ensure the cron syntax is valid
+
+Email Not Received:
+
+Check spam folder
+
+Verify Gmail app password is correct
+
+Ensure you haven't exceeded Gmail's sending limits
+
+Stock Data Missing:
+
+Verify stock tickers are correct
+
+Check if markets were closed (holidays)
+
+Review the Actions log for fetch errors
+
+Maintenance
+Update Stock List:
+
+Edit the TOP_STOCKS dictionary in stock_report.py
+
+Changes will automatically deploy on next run
+
+Change Schedule:
+
+Modify the cron expression in .github/workflows/stock_report.yml
+
+Use crontab.guru for testing
+
+Monitor Runs:
+
+Go to GitHub > Your Repository > Actions
+
+View logs and execution history
+
+This setup will run automatically every day, even when your computer is off, and costs nothing to maintain!
+
