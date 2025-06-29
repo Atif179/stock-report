@@ -3,7 +3,7 @@ import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 import time
@@ -43,7 +43,7 @@ def get_stock_data(ticker):
     stock = yf.Ticker(ticker)
     try:
         # Get max period needed (60 trading days + buffer)
-        data = stock.history(period='70d')
+        data = stock.history(period='80d')
         
         if data.empty:
             return None
@@ -55,6 +55,7 @@ def get_stock_data(ticker):
         changes = {}
         for period_name, days in TIME_PERIODS.items():
             if len(data) > days:
+                # Get price from 'days' trading days ago
                 past_price = data['Close'][-days-1]
                 change = ((current_price - past_price) / past_price) * 100
                 changes[period_name] = change
@@ -175,8 +176,10 @@ def send_stock_report(report):
         for col in df.columns:
             if 'Change' in col:
                 df[col] = df[col].apply(
-                    lambda x: f'<span class="{"positive" if "+" in x else ("negative" if "-" in x else "")}">{x}</span>'
-                    if x != "N/A" else x
+                    lambda x: 
+                        f'<span class="positive">{x}</span>' if isinstance(x, str) and '+' in x and 'N/A' not in x
+                        else (f'<span class="negative">{x}</span>' if isinstance(x, str) and '-' in x 
+                        else x)
                 )
         
         html += f"""
@@ -208,7 +211,9 @@ def send_stock_report(report):
 # ========================
 if __name__ == "__main__":
     print("Generating multi-period stock report...")
+    start_time = time.time()
     stock_report = generate_stock_report()
+    print(f"Report generated in {time.time() - start_time:.2f} seconds")
     print("Sending email report...")
     send_stock_report(stock_report)
     print("Process completed!")
