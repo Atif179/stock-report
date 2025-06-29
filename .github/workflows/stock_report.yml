@@ -2,45 +2,41 @@ name: Daily Stock Report
 
 on:
   schedule:
-    # Runs at 9 PM UTC daily (4 PM EST - after US markets close)
-    - cron: '0 21 * * *'
-  # Allows manual triggering
-  workflow_dispatch:
+    # Runs at 6:30 PM UTC every weekday (Mon-Fri)
+    - cron: '30 18 * * 1-5'
 
 jobs:
-  generate-report:
+  send-report:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
-      
+      with:
+        persist-credentials: false
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-        
+
     - name: Install dependencies
       run: |
+        python -m pip install --upgrade pip
         pip install yfinance pandas
-        
-    - name: Load reference prices
-      id: load-ref
-      uses: actions/cache@v3
-      with:
-        path: stock_reference.json
-        key: ref-${{ runner.os }}-${{ hashFiles('stock_report.py') }}
-        
+
     - name: Run stock report
       env:
         SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
         SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
       run: python stock_report.py
-      
-    - name: Save reference prices
+
+    - name: Commit reference updates
       if: always()
-      uses: actions/cache@v3
-      with:
-        path: stock_reference.json
-        key: ref-${{ runner.os }}-${{ hashFiles('stock_report.py') }}
+      run: |
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'actions@users.noreply.github.com'
+        git add stock_reference.json
+        git diff-index --quiet HEAD || git commit -m "Update reference prices"
+        git push
