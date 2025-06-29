@@ -3,7 +3,7 @@ import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import time
@@ -26,31 +26,46 @@ TOP_STOCKS = {
 # File path for reference prices
 REFERENCE_FILE = "stock_reference.json"
 
+# Time periods for comparison (in trading days)
+TIME_PERIODS = {
+    "1d": 1,    # Yesterday
+    "1w": 5,    # Last week (5 trading days)
+    "15d": 15,  # Last 15 trading days
+    "30d": 30,  # Last 30 trading days
+    "2m": 60    # Last 60 trading days (2 months)
+}
+
 # ========================
 # FUNCTIONS
 # ========================
 def get_stock_data(ticker):
-    """Fetch current stock data using Yahoo Finance"""
+    """Fetch stock data for multiple time periods"""
     stock = yf.Ticker(ticker)
     try:
-        # Get today's data
-        today = datetime.today().date()
-        data = stock.history(period='1d')
+        # Get max period needed (60 trading days + buffer)
+        data = stock.history(period='70d')
         
         if data.empty:
-            # Try getting last available data if today is holiday
-            data = stock.history(period='5d').tail(1)
-        
-        if not data.empty:
-            current_price = data['Close'][-1]
-            previous_close = data['Close'][0] if len(data) > 1 else current_price
-            daily_change = ((current_price - previous_close) / previous_close) * 100
+            return None
             
-            return {
-                'symbol': ticker,
-                'price': current_price,
-                'daily_change': daily_change
-            }
+        # Get today's price (last available data point)
+        current_price = data['Close'][-1]
+        
+        # Calculate changes for each time period
+        changes = {}
+        for period_name, days in TIME_PERIODS.items():
+            if len(data) > days:
+                past_price = data['Close'][-days-1]
+                change = ((current_price - past_price) / past_price) * 100
+                changes[period_name] = change
+            else:
+                changes[period_name] = None
+        
+        return {
+            'symbol': ticker,
+            'price': current_price,
+            'changes': changes
+        }
     except Exception as e:
         print(f"Error fetching {ticker}: {str(e)}")
     return None
@@ -95,12 +110,22 @@ def generate_stock_report():
             ref_price = reference_prices[ref_key]
             ref_change = ((current_price - ref_price) / ref_price) * 100
             
-            category_data.append({
+            # Prepare row data with all time periods
+            row = {
                 'Symbol': ticker,
                 'Current Price': f"${current_price:.2f}",
-                'Change vs Reference': f"{ref_change:+.2f}%",
-                'Daily Change': f"{stock_data['daily_change']:+.2f}%"
-            })
+                'Change vs Reference': f"{ref_change:+.2f}%"
+            }
+            
+            # Add all time period changes
+            for period_name in TIME_PERIODS:
+                change = stock_data['changes'].get(period_name)
+                if change is not None:
+                    row[f'{period_name} Change'] = f"{change:+.2f}%"
+                else:
+                    row[f'{period_name} Change'] = "N/A"
+            
+            category_data.append(row)
         
         # Create DataFrame for the category
         report[category] = pd.DataFrame(category_data)
@@ -117,7 +142,7 @@ def send_stock_report(report):
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"Daily Stock Report - {today}"
+    msg['Subject'] = f"Multi-Period Stock Report - {today}"
     
     # Create HTML content
     html = f"""
@@ -134,16 +159,25 @@ def send_stock_report(report):
             </style>
         </head>
         <body>
-            <h2>📈 Daily Stock Performance Report ({today})</h2>
-            <p>Reference prices are locked from initial run date. Daily changes show performance vs this reference.</p>
+            <h2>📈 Multi-Period Stock Performance Report ({today})</h2>
+            <p>Time period changes show today's price vs:</p>
+            <ul>
+                <li><strong>1d</strong>: Yesterday's close</li>
+                <li><strong>1w</strong>: 5 trading days ago</li>
+                <li><strong>15d</strong>: 15 trading days ago</li>
+                <li><strong>30d</strong>: 30 trading days ago</li>
+                <li><strong>2m</strong>: 60 trading days ago (approx 2 months)</li>
+            </ul>
     """
     
     for category, df in report.items():
-        # Format percentage changes with color coding
-        df['Change vs Reference'] = df['Change vs Reference'].apply(
-            lambda x: f'<span class="{"positive" if "+" in x else "negative"}">{x}</span>')
-        df['Daily Change'] = df['Daily Change'].apply(
-            lambda x: f'<span class="{"positive" if "+" in x else "negative"}">{x}</span>')
+        # Apply color coding to all percentage columns
+        for col in df.columns:
+            if 'Change' in col:
+                df[col] = df[col].apply(
+                    lambda x: f'<span class="{"positive" if "+" in x else ("negative" if "-" in x else "")}">{x}</span>'
+                    if x != "N/A" else x
+                )
         
         html += f"""
         <h3>🔧 {category} Sector (Top 10)</h3>
@@ -153,7 +187,7 @@ def send_stock_report(report):
     
     html += """
             <p style="color: #666; font-size: 0.9em;">
-                Note: Data from Yahoo Finance | Reference prices set on first run
+                Note: Data from Yahoo Finance | Trading days only (excludes weekends/holidays)
             </p>
         </body>
     </html>
@@ -173,7 +207,7 @@ def send_stock_report(report):
 # MAIN EXECUTION
 # ========================
 if __name__ == "__main__":
-    print("Generating stock report...")
+    print("Generating multi-period stock report...")
     stock_report = generate_stock_report()
     print("Sending email report...")
     send_stock_report(stock_report)
